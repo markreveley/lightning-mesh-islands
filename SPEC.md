@@ -1,6 +1,6 @@
 # lightning-mesh-islands — Partition & Heal Visualizer
 
-**Status:** Design spec, ready to build (2026-11-02). Two-day hackathon, 3–8 people (§8).
+**Status:** Design spec, ready to build (2026-11-02). Two-day hackathon, one builder (§8).
 **Upstream:** [`WorldTreeNetwork/lightning-mesh`](https://github.com/WorldTreeNetwork/lightning-mesh), checked out beside this repo at `../lightning-mesh`.
 
 ## 1. Purpose
@@ -110,25 +110,28 @@ describe the right scenario but give you no harness.
 4. **NodeView contract** (§5) shared by every backend.
 
 5. **Live-fleet collector** (read-only): poll `/api/directory` and `/api/radio`
-   on the venue mesh's LAN gateways. Promoted to MVP because a mesh is
-   installed at the venue. The viewer laptop must be joined to the mesh SSID
-   to reach the `10.42.<x>.1` LAN gateways. Partitions are physical (unplug or
-   power off a node), and only with the mesh owner's OK.
+   on the venue mesh's LAN gateways (4–5 nodes). The viewer laptop must be
+   joined to the mesh SSID to reach the `10.42.<x>.1` LAN gateways. Partitions
+   are physical: unplug or power off a node (the builder owns the mesh). See
+   §9.2 for what unplugging can and can't show.
 
 ### Stretch (in order)
-6. **Sim-lab collector**: SSH to `10.99.0.x`, read `directory.json`,
-   `radio.json` and `ip route show proto babel`; partition by stopping vwifi.
-   Real babel routes and real timings. Needs a Linux box with KVM (§9).
+6. **Real routes on the fleet view**: read-only SSH to each node's `10.254.x`
+   address for `ip route show proto babel`, so the live view shows real route
+   withdrawal and `routes.modeled = false`.
 7. **Replay**: record an event log; scrub the timeline after the fact.
-8. **Upstream digest proposal** (§9.4).
 
 ### Out of scope / non-goals
 - Island formation (shared-subnet roaming), from upstream.
+- **The upstream sim lab** (`deploy/sim/`, libvirt OpenWrt VMs). Dropped for a
+  solo build: hours of Linux/KVM setup, and the venue mesh already gives real
+  routes and timings (§9.3).
 - **Any write to real nodes.** The live collector is read-only. No `mjolnir-apply`,
-  no UCI, no publish. (Sim-lab writes are fine; it's a lab.)
-- Changes to upstream `lightning-mesh` in the MVP. If an upstream endpoint
-  would help (e.g. a per-book digest in `directory.json`), write it up as a
-  proposal (§9), don't patch it.
+  no UCI, no publish.
+- Changes to upstream `lightning-mesh`. The per-book digest that would make
+  the live view exact is filed as
+  [lightning-mesh-dev#9](https://github.com/markreveley/lightning-mesh-dev/issues/9);
+  don't patch upstream here.
 - Running real `babeld` inside the simulator. Sim routes are **modeled** and
   must be labeled that way in the UI.
 - Radio/RF modelling beyond link up/down.
@@ -147,10 +150,10 @@ describe the right scenario but give you no harness.
             └──────┬──────────────────┬───────────────────┬────┘
                    │                  │                   │
          ┌─────────▼──────┐  ┌────────▼────────┐  ┌───────▼────────┐
-         │ SimBackend     │  │ SimLabBackend   │  │ FleetBackend   │
-         │ in-process,    │  │ SSH 10.99.0.x   │  │ GET /api/* on  │
-         │ mjolnir-mesh   │  │ vwifi levers    │  │ LAN gateways   │
-         │ lib, virtual t │  │ (stretch)       │  │ read-only      │
+         │ SimBackend     │  │ MockBackend     │  │ FleetBackend   │
+         │ in-process,    │  │ replays         │  │ GET /api/* on  │
+         │ mjolnir-mesh   │  │ fixtures/ for   │  │ LAN gateways   │
+         │ lib, virtual t │  │ viewer dev      │  │ read-only      │
          └────────────────┘  └─────────────────┘  └────────────────┘
 ```
 
@@ -166,8 +169,12 @@ SPEC.md                     # this file
 ```
 
 - Depend on upstream by path: `mjolnir-mesh = { path = "../lightning-mesh/crates/mjolnir-mesh", default-features = false }`.
-  **Do not enable `daemon`** (it pulls in iroh and Linux-only deps). ⚠ The first
-  task is confirming the lib builds on macOS without it.
+  **Do not enable `daemon`** (it pulls in iroh and Linux-only deps). Without it
+  the lib is known to build on macOS: lightning-mesh-dev generates its tutorial
+  examples on the Mac from a program that depends on these crates by path
+  (`../lightning-mesh-dev/AGENTS.md`, "Producing examples on the Mac"). Set
+  `CARGO_TARGET_DIR` outside `../lightning-mesh/target`, which is often
+  root-owned.
 - Web stack: Svelte + Vite, to match upstream `hello-mesh-web`.
   `hello-mesh-web/src/lib/components/RadioGraph.svelte` is prior art for drawing
   the topology. Read it, but don't import across repos.
@@ -263,82 +270,71 @@ Each is a JSON file of timed steps plus assertions; `islands-server
   scenario, reset.
 - A **"modeled routes"** badge whenever `routes.modeled = true`.
 
-## 8. Plan: two days, 3–8 people, parallel lanes
+## 8. Plan: two days, one builder
 
-The **contracts in §5 are the seams between lanes.** Freeze NodeView v1 and the
-event schema in the first hour. After that, no lane waits on another.
+One person, so the order matters more than parallelism. Each block ends with
+something demoable, so if time runs out the demo is whatever block is done.
+The §5 contracts still keep the pieces separable: the viewer can be built
+against `fixtures/` before the simulator works.
 
-### Hour 0 (everyone, ≤1h)
-- Agree on §5. Commit `fixtures/nodeviews/*.json` (hand-written NodeViews for
-  5 nodes: converged, split, conflicting) and `fixtures/events/*.jsonl` (a
-  hand-written partition → heal stream).
-- Lane A starts M0 immediately; it's on the critical path.
-
-### Lanes
-
-| Lane | People | Owns | Starts from | Done when |
-|---|---|---|---|---|
-| **A — Sim core** | 1–2 | `islands-core`, `islands-sim` | upstream lib + `service_mesh_convergence.rs` | Scenarios 1–3 pass headless |
-| **B — Viewer** | 1–2 | `web/` | `fixtures/` (no backend needed) | Topology, matrix, timeline and controls render from fixtures, then from live WS |
-| **C — Server + scenarios** | 1 | `islands-server`, `scenarios/` | §5 contracts; a mock backend that replays `fixtures/events` | `curl`/WS serves NodeViews; `--headless` runner exits non-zero on failed asserts |
-| **D — Venue mesh** | 1–2 | `FleetBackend` | §2 facts; the installed mesh | Live venue mesh renders read-only in the viewer |
-| **E — Sim lab** *(if ≥6 people)* | 1 | `SimLabBackend` | `../lightning-mesh/deploy/sim/README.md` | Real `proto babel` routes visible; vwifi partition shows in the viewer |
-
-With 3 people, merge lanes: A+C, B, D. Lane E is the first thing to drop.
-
-### Milestones
-
-| # | Deliverable | Lane | Target |
+| # | Block | Done when | Target |
 |---|---|---|---|
-| M0 | Workspace builds on macOS against `../lightning-mesh` lib, without `daemon`; first CRDT apply called from `islands-sim` | A | Day 1, morning |
-| M1 | Sim: nodes, link queues, virtual clock, `services` + `subnet_claims` + `liveness` books; scenario 3 passes | A | Day 1 |
-| M2 | Server: NodeView + digest over WS/HTTP, mock backend, headless runner | C | Day 1 |
-| M3 | Viewer runs from fixtures, then from the live server; cut/heal by click | B | Day 1 → Day 2 morning |
-| M4 | Scenarios 1 and 2 pass headless and play visibly | A + C | Day 2 midday |
-| M5 | Venue mesh in the viewer (read-only) | D | Day 2 midday |
-| M6 | Sim-lab collector | E | Day 2, if time |
-| — | **Integration freeze, demo rehearsal** | all | Day 2, last 3h |
+| M0 | Workspace builds against `../lightning-mesh` lib (no `daemon`); first CRDT apply called from `islands-sim` | `cargo build` green | Day 1, first 2h |
+| M1 | Sim: nodes, link queues, virtual clock; `services` + `subnet_claims` + `liveness` books | Scenario 3 passes headless | Day 1 morning |
+| M2 | `islands-core` NodeView + digest; `islands-server` (HTTP + WS) + headless scenario runner | `curl` shows NodeViews; `--headless` exits non-zero on a failed assert | Day 1 afternoon |
+| M3 | Viewer: divergence matrix + timeline first, then topology and controls | Click to cut and heal a link; the matrix goes multicolor, then one color | Day 1 evening → Day 2 morning |
+| M4 | Scenarios 1 and 2 | All three pass headless and play in the UI | Day 2 midday |
+| M5 | `FleetBackend` on the venue mesh | Live 4–5 nodes render; unplugging one shows it go stale everywhere | Day 2 afternoon |
+| — | Freeze, rehearse the demo twice | — | Day 2, last 2h |
+| M6 | *(stretch)* real babel routes via read-only SSH; replay | — | only if ahead |
 
-**Demo arc:** simulator (scenario 1, split-brain name, at 10×) → divergence
-matrix goes multicolor → heal → one color, with "heal → converge: N ms"
-on screen → switch the backend to the live venue mesh and show the same
-views on real hardware.
+**Cut order if behind:** M6 → topology animation (keep a static graph) →
+scenario 2 → M5. Never cut the matrix, scenario 1 or the headless runner.
 
-Pre-hackathon prep, if the rules allow it: M0, the fixtures, and reading the
-upstream files in §2.
+**Demo arc:** simulator, scenario 1 (split-brain name) at 10× → the matrix
+goes multicolor → heal → one color, with "heal → converge: N ms" on screen →
+switch to the live venue mesh → unplug a node → it goes stale on every
+survivor at about 60s → plug it back → it reconverges.
+
+**Before the event**, if the rules allow it: M0, the `fixtures/`, and reading
+the upstream files in §2. Join the venue mesh SSID once to confirm the laptop
+can reach every node's `10.42.<x>.1/api/directory`.
 
 ## 9. Decisions and open questions
 
 Resolved 2026-11-02:
-1. **Length and team:** two days; 3–8 people working in small teams or
-   independently. This is why §8 is organised as lanes.
-2. **Hardware:** a Lightning Mesh is installed at the venue, so the live-fleet
-   collector is MVP (lane D). ⚠ Confirm how many nodes it has. A visible
-   partition needs ≥2, and ≥3 makes the demo better. Also confirm who may
-   unplug them.
-3. **Linux box:** one should be available. The sim lab needs: Linux x86_64,
-   hardware virtualization (KVM, so `/dev/kvm` exists), root, libvirt/QEMU,
-   about 4 GB free RAM for 5 small OpenWrt VMs, and an upstream checkout to
-   run `deploy/sim/build-*.sh`. Setting it up from scratch takes hours, so
-   provision it before the event or drop lane E.
+1. **Team:** one builder, two days (§8).
+2. **Venue hardware:** 4–5 Lightning Mesh nodes; the builder can unplug them.
+   ⚠ What unplugging shows depends on the radio topology. If every node hears
+   every other node over 802.11s (likely in one room), unplugging a node is
+   **node death** (scenario 2), not a split. A true live split needs a node
+   that is the only bridge between two groups. Place nodes so one is the
+   middle of a chain, or accept that the split-brain story (scenario 1) is a
+   simulator-only demo.
+3. **Sim lab:** dropped. It is the upstream `deploy/sim/` setup: libvirt runs
+   about 5 OpenWrt virtual routers on one Linux box, with simulated Wi-Fi
+   (vwifi + `mac80211_hwsim`) between them, so a partition can be made by
+   stopping a process instead of unplugging hardware. It needs Linux x86_64
+   with KVM, root, about 4 GB RAM, and hours of setup. For one builder with a
+   real mesh at the venue, the in-process simulator plus the live mesh cover
+   the same ground.
 
 Open:
 
-4. **Upstream digest proposal.** A real node's `directory.json` is a
-   *summary* of its CRDT state, so the fleet view computes digests from that
-   summary (§5.2). Two nodes could differ in a field the summary leaves out
-   and still look converged. The fix is a small additive upstream change to
-   `lightning-mesh`: meshd writes one digest per book (and its HLC
-   high-water mark) into `directory.json`. Not needed for the MVP. Reaching
-   the venue mesh would also mean redeploying its routers, which the mesh
-   owner must approve.
+4. **Exact live convergence:** `directory.json` has no state digest, so the
+   live view compares projections and labels itself approximate. Tracked
+   upstream as
+   [lightning-mesh-dev#9](https://github.com/markreveley/lightning-mesh-dev/issues/9).
 
 ## 10. First steps for the building agent
 
 1. Read upstream: `crates/mjolnir-mesh/tests/service_mesh_convergence.rs`,
    `src/crdt/{gossip,sync,hlc,liveness,service_apply,subnet}.rs`, and
    `docs/network-coordination/{gossip-and-crdt,babel-routing,p2p-resilience}.md`.
-2. Check the ⚠ items in §2 (macOS build without `daemon`; apply functions
-   that read `SystemTime`).
-3. Write the §8 hour-0 fixtures so lanes B and C can start without lane A.
-4. Lane A: build M0 → M1 → M4 in order. Keep scenario 3 green from M1 onward.
+2. Check the remaining ⚠ item in §2: whether any apply function you call reads
+   `SystemTime` through `tick_hlc`/`observe_hlc` instead of taking time
+   explicitly.
+3. Write `fixtures/nodeviews/*.json` and `fixtures/events/*.jsonl` (converged,
+   split, conflicting; 5 nodes) so the viewer can be built before the sim
+   works.
+4. Follow §8 in order. Keep scenario 3 green from M1 onward.
